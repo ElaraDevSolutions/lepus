@@ -1,33 +1,39 @@
 import os, json
 
-from pika import BlockingConnection
+from pika import BlockingConnection, ConnectionParameters
 from pika.connection import Parameters
 from pika.credentials import PlainCredentials
 
 def _load_env(key, default):
     try:
         return os.environ[key]
-    except KeyError as e:
+    except KeyError:
+        return default
+
+def _load_json(data, key, default):
+    try:
+        return data[key]
+    except KeyError:
         return default
 
 class Queue:
     def __init__(self, value):
         self.name = value['name']
-        self.passive = value['passive'] if value['passive'] else False
-        self.durable = value['durable'] if value['durable'] else False
-        self.exclusive = value['exclusive'] if value['exclusive'] else False
-        self.auto_delete = value['auto_delete'] if value['auto_delete'] else False
-        self.arguments = value['arguments'] if value['arguments'] else None
+        self.passive = _load_json(value, 'passive', False)
+        self.durable = _load_json(value, 'durable', False)
+        self.exclusive = _load_json(value, 'exclusive', False)
+        self.auto_delete = _load_json(value, 'auto_delete', False)
+        self.arguments = _load_json(value, 'arguments', None)
 
 class Exchange:
     def __init__(self, value):
         self.name = value['name']
-        self.type = value['type'] if value['type'] else 'fanout'
-        self.passive = value['passive'] if value['passive'] else False
-        self.durable = value['durable'] if value['durable'] else False
-        self.auto_delete = value['auto_delete'] if value['auto_delete'] else False
-        self.internal = value['internal'] if value['internal'] else False
-        self.arguments = value['arguments'] if value['arguments'] else None
+        self.type = _load_json(value, 'type', 'fanout')
+        self.passive = _load_json(value, 'passive', False)
+        self.durable = _load_json(value, 'durable', False)
+        self.auto_delete = _load_json(value, 'auto_delete', False)
+        self.internal = _load_json(value, 'internal', False)
+        self.arguments = _load_json(value, 'arguments', None)
 
 class Rabbit:
     def __init__(self, json_filename):
@@ -54,19 +60,21 @@ class Rabbit:
                 self.credentials = PlainCredentials(username, password)
                 
                 self.connection = BlockingConnection(
-                    host = self.host, 
-                    port = self.port, 
-                    blocked_connection_timeout = self.blocked_connection_timeout, 
-                    channel_max = self.channel_max, 
-                    client_properties = self.client_properties, 
-                    connection_attempts = self.connection_attempts, 
-                    frame_max = self.frame_max, 
-                    heartbeat = self.heartbeat, 
-                    locale = self.locale, 
-                    retry_delay = self.retry_delay, 
-                    socket_timeout = self.socket_timeout, 
-                    stack_timeout = self.stack_timeout, 
-                    virtual_host = self.virtual_host
+                    ConnectionParameters(
+                        host = self.host, 
+                        port = self.port, 
+                        blocked_connection_timeout = self.blocked_connection_timeout, 
+                        channel_max = self.channel_max, 
+                        client_properties = self.client_properties, 
+                        connection_attempts = self.connection_attempts, 
+                        frame_max = self.frame_max, 
+                        heartbeat = self.heartbeat, 
+                        locale = self.locale, 
+                        retry_delay = self.retry_delay, 
+                        socket_timeout = self.socket_timeout, 
+                        stack_timeout = self.stack_timeout, 
+                        virtual_host = self.virtual_host
+                    )
                 )
                 
                 self.channel = self.connection.channel()
@@ -102,7 +110,7 @@ class Rabbit:
             raise e
     
     def listener(self, queue, auto_ack=True):
-        def decorator(callback):
+        def listener(callback):
             def wrapper(ch, method, properties, body):
                 kwargs = {}
                 if 'ch' in callback.__code__.co_varnames:
@@ -120,7 +128,7 @@ class Rabbit:
                 auto_ack = auto_ack
             )
 
-        return decorator
+        return listener
     
     def publish(self, body, exchange='', routing_key=''):
         self.channel.basic_publish(exchange=exchange, routing_key=routing_key, body=body)

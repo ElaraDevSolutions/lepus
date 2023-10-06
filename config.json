@@ -1,0 +1,8 @@
+{
+    "host": "localhost",
+    "queues": [
+        {
+            "name": "my-queue"
+        }
+    ]
+}
