@@ -21,7 +21,7 @@ class Exchange:
         self.internal = internal
         self.arguments = arguments
 
-class Connection:
+class Rabbit:
     def __init__(self, host=None, port=None, blocked_connection_timeout=None, channel_max=None, client_properties=None, connection_attempts=None, credentials=None, frame_max=None, heartbeat=None, locale=None, retry_delay=None, socket_timeout=None, stack_timeout=None, virtual_host=None, username=None, password=None, auto_ack=None, queues=[], exchanges=[]):
         self.host = host if host else Parameters.DEFAULT_HOST
         self.port = port if port else Parameters.DEFAULT_PORT
