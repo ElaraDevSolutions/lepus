@@ -112,15 +112,7 @@ class Rabbit:
     def listener(self, queue, auto_ack=True):
         def listener(callback):
             def wrapper(ch, method, properties, body):
-                kwargs = {}
-                if 'ch' in callback.__code__.co_varnames:
-                    kwargs['ch'] = ch
-                if 'method' in callback.__code__.co_varnames:
-                    kwargs['method'] = method
-                if 'properties' in callback.__code__.co_varnames:
-                    kwargs['properties'] = properties
-
-                callback(body, **kwargs)
+                callback(ch, method, properties, body)
 
             self.channel.basic_consume(
                 queue = queue,
