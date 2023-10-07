@@ -129,7 +129,10 @@ class Rabbit:
             )
 
         return listener
-    
+
+    def start_consuming(self):
+        self.channel.start_consuming()
+
     def publish(self, body, exchange='', routing_key=''):
         self.channel.basic_publish(exchange=exchange, routing_key=routing_key, body=body)
     

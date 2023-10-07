@@ -1,12 +1,23 @@
 import json
+import threading
 from pyrabbit import Rabbit
 
-if __name__ == "__main__":
-    json_filename = 'config.json'
-    rabbit = Rabbit(json_filename)
+json_filename = 'config.json'
+rabbit = Rabbit(json_filename)
 
-    @rabbit.listener('my-queue')
-    def callback(ch, method, properties, body):
-        print(f" [x] Received {body}")
+cv = threading.Condition()
 
-rabbit.publish(json.dumps({"message": "Hello World!"}), routing_key='my-queue')
+@rabbit.listener('my-queue')
+def callback(ch, method, properties, body):
+    print(f" [x] Received {body}")
+    with cv:
+        print("[INFO] notify_all")
+        cv.notify_all()
+
+msg = json.dumps({"message": "Hello World!"})
+rabbit.publish(msg, routing_key='my-queue')
+rabbit.start_consuming()
+with cv:
+    print("[INFO] waiting to consume a message...")
+    cv.wait()
+    print("[INFO] consumed message, exiting")
