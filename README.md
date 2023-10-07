@@ -45,30 +45,61 @@ Lepus is an open-source project, and we encourage contributions from the communi
 As mentioned above, almost all configuration must be in a JSON file. This configuration will be used when instantiating the `Rabbit` object in the example above (in our example, `config.json`). Here is the list of settings:
 Certainly, here is the first table in English:
 
-| Property                       | Description                                                         |
-|--------------------------------|---------------------------------------------------------------------|
-| `host`                         | The host address for the RabbitMQ connection.                        |
-| `port`                         | The RabbitMQ host port for the connection.                           |
-| `blocked_connection_timeout`   | The timeout for blocked connections.                                 |
-| `channel_max`                  | The maximum number of allowed communication channels.                |
-| `client_properties`            | RabbitMQ client properties.                                          |
-| `connection_attempts`          | The number of connection attempts allowed.                           |
-| `frame_max`                    | The maximum frame size for communication.                            |
-| `heartbeat`                    | The timeout for maintaining the heartbeat connection.                |
-| `locale`                       | The locale for communication with RabbitMQ.                          |
-| `retry_delay`                  | The delay between connection retry attempts.                         |
-| `socket_timeout`               | The timeout for socket operations.                                   |
-| `stack_timeout`                | The timeout for communication stack operations.                      |
-| `virtual_host`                 | The virtual host for the RabbitMQ connection.                        |
-| `username`                     | The user identifier for authentication with RabbitMQ.                |
-| `password`                     | The secret passphrase associated with `username` for authentication. |
+### Root properties
+
+| Property                       | Description                                                            |
+| ------------------------------ | ---------------------------------------------------------------------- |
+| `host`                       | The host address for the RabbitMQ connection.                          |
+| `port`                       | The RabbitMQ host port for the connection.                             |
+| `blocked_connection_timeout` | The timeout for blocked connections.                                   |
+| `channel_max`                | The maximum number of allowed communication channels.                  |
+| `client_properties`          | RabbitMQ client properties.                                            |
+| `connection_attempts`        | The number of connection attempts allowed.                             |
+| `frame_max`                  | The maximum frame size for communication.                              |
+| `heartbeat`                  | The timeout for maintaining the heartbeat connection.                  |
+| `locale`                     | The locale for communication with RabbitMQ.                            |
+| `retry_delay`                | The delay between connection retry attempts.                           |
+| `socket_timeout`             | The timeout for socket operations.                                     |
+| `stack_timeout`              | The timeout for communication stack operations.                        |
+| `virtual_host`               | The virtual host for the RabbitMQ connection.                          |
+| `queues`                     | List of queues (See details in the lists below) |
+| `exchanges`                   | List of exchanges (See details in the lists below) |
+
+Claro, aqui estão as duas listas em inglês, uma para a classe `Queue` e outra para a classe `Exchange`, com suas propriedades e descrições correspondentes:
+
+### Queue Properties
+
+| Property         | Description                                            |
+|------------------|--------------------------------------------------------|
+| `name`           | The name of the queue.                                 |
+| `passive`        | Whether the queue is passive (default: False).        |
+| `durable`        | Whether the queue is durable (default: False).        |
+| `exclusive`      | Whether the queue is exclusive (default: False).      |
+| `auto_delete`    | Whether the queue is auto-deleted (default: False).  |
+| `arguments`      | Additional arguments for the queue (default: None).  |
+
+These properties define the characteristics and behavior of a RabbitMQ queue.
+
+### Exchange Properties
+
+| Property         | Description                                            |
+|------------------|--------------------------------------------------------|
+| `name`           | The name of the exchange.                              |
+| `type`           | The type of the exchange (default: 'fanout').         |
+| `passive`        | Whether the exchange is passive (default: False).    |
+| `durable`        | Whether the exchange is durable (default: False).    |
+| `auto_delete`    | Whether the exchange is auto-deleted (default: False).|
+| `internal`       | Whether the exchange is internal (default: False).   |
+| `arguments`      | Additional arguments for the exchange (default: None).|
+
+### Credentials Variables
 
 We have two crucial properties, username and password, are sourced from environment variables. These environment variables play a pivotal role in establishing secure authentication with RabbitMQ. Here is a brief explanation of each, along with a list:
 
-| Environment Variable | Description                                      |
-|-----------------------|--------------------------------------------------|
-| `RABBIT_USERNAME`            | The user identifier for authentication with RabbitMQ. |
-| `RABBIT_PASSWORD`            | The secret passphrase associated with `username` for authentication. |
+| Environment Variable | Description                                                            |
+| -------------------- | ---------------------------------------------------------------------- |
+| `RABBIT_USERNAME`  | The user identifier for authentication with RabbitMQ.                  |
+| `RABBIT_PASSWORD`  | The secret passphrase associated with `username` for authentication. |
 
 by default: guest / guest
 
