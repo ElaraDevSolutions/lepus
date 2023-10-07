@@ -65,8 +65,6 @@ Certainly, here is the first table in English:
 | `queues`                     | List of queues (See details in the lists below) |
 | `exchanges`                   | List of exchanges (See details in the lists below) |
 
-Claro, aqui estão as duas listas em inglês, uma para a classe `Queue` e outra para a classe `Exchange`, com suas propriedades e descrições correspondentes:
-
 ### Queue Properties
 
 | Property         | Description                                            |
