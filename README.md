@@ -25,7 +25,7 @@ To start using Lepus in your project, follow these simple steps:
 3. Declare queues and exchanges, configure message handling, and start efficiently exchanging information with RabbitMQ.
 
    ```python
-   rabbit = Rabbit(host='localhost')
+   rabbit = Rabbit('config.json')
 
    @rabbit.listener(queue='my-queue')
    def callback(ch, method, properties, body):
@@ -42,7 +42,35 @@ Lepus is an open-source project, and we encourage contributions from the communi
 
 ## Documentation
 
-Comprehensive documentation for Lepus can be found at [documentation_link](documentation_link). Be sure to check the documentation for detailed information on how to use all of Lepus's features.
+As mentioned above, almost all configuration must be in a JSON file. This configuration will be used when instantiating the `Rabbit` object in the example above (in our example, `config.json`). Here is the list of settings:
+Certainly, here is the first table in English:
+
+| Property                       | Description                                                         |
+|--------------------------------|---------------------------------------------------------------------|
+| `host`                         | The host address for the RabbitMQ connection.                        |
+| `port`                         | The RabbitMQ host port for the connection.                           |
+| `blocked_connection_timeout`   | The timeout for blocked connections.                                 |
+| `channel_max`                  | The maximum number of allowed communication channels.                |
+| `client_properties`            | RabbitMQ client properties.                                          |
+| `connection_attempts`          | The number of connection attempts allowed.                           |
+| `frame_max`                    | The maximum frame size for communication.                            |
+| `heartbeat`                    | The timeout for maintaining the heartbeat connection.                |
+| `locale`                       | The locale for communication with RabbitMQ.                          |
+| `retry_delay`                  | The delay between connection retry attempts.                         |
+| `socket_timeout`               | The timeout for socket operations.                                   |
+| `stack_timeout`                | The timeout for communication stack operations.                      |
+| `virtual_host`                 | The virtual host for the RabbitMQ connection.                        |
+| `username`                     | The user identifier for authentication with RabbitMQ.                |
+| `password`                     | The secret passphrase associated with `username` for authentication. |
+
+We have two crucial properties, username and password, are sourced from environment variables. These environment variables play a pivotal role in establishing secure authentication with RabbitMQ. Here is a brief explanation of each, along with a list:
+
+| Environment Variable | Description                                      |
+|-----------------------|--------------------------------------------------|
+| `RABBIT_USERNAME`            | The user identifier for authentication with RabbitMQ. |
+| `RABBIT_PASSWORD`            | The secret passphrase associated with `username` for authentication. |
+
+by default: guest / guest
 
 ## License
 

@@ -55,8 +55,8 @@ class Rabbit:
                 self.stack_timeout = data.get('stack_timeout', Parameters.DEFAULT_STACK_TIMEOUT)
                 self.virtual_host = data.get('virtual_host', Parameters.DEFAULT_VIRTUAL_HOST)
                 
-                username = _load_env('USERNAME', Parameters.DEFAULT_USERNAME)
-                password = _load_env('PASSWORD', Parameters.DEFAULT_PASSWORD)
+                username = _load_env('RABBIT_USERNAME', Parameters.DEFAULT_USERNAME)
+                password = _load_env('RABBIT_PASSWORD', Parameters.DEFAULT_PASSWORD)
                 self.credentials = PlainCredentials(username, password)
                 
                 self.connection = BlockingConnection(
