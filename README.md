@@ -51,3 +51,5 @@ Lepus is distributed under the [GNU General Public Licience](https://www.gnu.org
 ## Contact
 
 If you have any questions, suggestions, or need assistance, don't hesitate to reach out to us at [Marcos Stefani Rosa](mailto:elaradevsolutions@gmail.com) or visit our [GitHub page](https://github.com/ElaraDevSolutions) for more information.
+
+If you want to collaborate so that we can continue to have innovative ideas and more time to invest in these projects, contribute to our [Patreon](patreon.com/ElaraSolutions).
