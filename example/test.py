@@ -1,6 +1,6 @@
 import json
 import threading
-from pyrabbit import Rabbit
+from lepus import Rabbit
 
 json_filename = 'config.json'
 rabbit = Rabbit(json_filename)
