@@ -25,14 +25,35 @@ To start using Lepus in your project, follow these simple steps:
 3. Declare queues and exchanges, configure message handling, and start efficiently exchanging information with RabbitMQ.
 
    ```python
-   rabbit = Rabbit('config.json')
+   from lepus import configure, publish, listener, start_consuming
 
-   @rabbit.listener(queue='my-queue')
-   def callback(ch, method, properties, body):
-       print(f" [x] Received {body}")
+   # Configure once (global singleton). You can pass a path to a JSON file
+   # or override values directly. If host == "memory" an in-memory broker is used.
+   configure('config.json')  # or configure(None, host="memory", queues=[{"name": "my-queue"}])
 
-   rabbit.publish("Hello World!", routing_key='my-queue')
+   @listener('my-queue')
+   def callback(message):  # message is auto JSON-decoded if possible
+      print(f" [x] Received {message}")
+
+   publish({"hello": "world"}, queue='my-queue')  # dicts auto serialize to JSON
+   start_consuming()  # runs consumer loop in a background thread by default
    ```
+
+### Direct Class Usage
+
+If you prefer explicit instances over the global helpers:
+
+```python
+from lepus import Rabbit
+rabbit = Rabbit('config.json')
+
+@rabbit.listener('my-queue')
+def on_msg(msg):
+   print(msg)
+
+rabbit.publish('Hello!', routing_key='my-queue')
+rabbit.start_consuming()  # thread by default
+```
 
 Lepus provides a smooth and effective development experience for RabbitMQ integration, enabling you to make the most of the power of this powerful messaging tool.
 
@@ -99,7 +120,29 @@ We have two crucial properties, username and password, are sourced from environm
 | `RABBIT_USERNAME`  | The user identifier for authentication with RabbitMQ.                  |
 | `RABBIT_PASSWORD`  | The secret passphrase associated with `username` for authentication. |
 
-by default: guest / guest
+By default: guest / guest
+
+### Test Mode (In-Memory Broker)
+
+For unit tests you can avoid a real RabbitMQ instance (and Docker) by configuring Lepus with `host="memory"`:
+
+```python
+from lepus import configure, publish, listener
+
+configure(None, host="memory", queues=[{"name": "q"}])
+
+@listener('q')
+def handle(msg):
+   assert isinstance(msg, dict)
+
+publish({"x": 1}, queue='q')  # delivered synchronously
+```
+
+This uses an in-memory queue simulation sufficient for typical unit tests (publish / fan-out / JSON encoding). Integration tests can still target a real RabbitMQ server by pointing `host` at your broker.
+
+### CI
+
+GitHub Actions workflow `.github/workflows/tests.yml` runs the test suite (`pytest`) on pull requests and pushes to `main`.
 
 ## License
 
