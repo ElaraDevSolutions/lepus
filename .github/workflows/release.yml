@@ -4,65 +4,85 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Versão que será publicada (deve coincidir com setup.py)'
+        description: 'Version to publish (will be written to setup.py)'
         required: true
       dry_run:
-        description: 'Publicar em TestPyPI (true) ou PyPI (false)'
+        description: 'Publish to TestPyPI (true) or PyPI (false)'
         required: false
         default: 'false'
+      create_tag:
+        description: 'Create and push tag v<version> automatically'
+        required: false
+        default: 'true'
   push:
     tags:
       - 'v*'
 
 jobs:
   build-and-publish:
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Configurar Python
+  - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
 
-      - name: Instalar ferramentas de build
+  - name: Install build tools
         run: |
           python -m pip install --upgrade pip
           pip install build twine
 
-      - name: Validar versão
-        id: version_check
+      - name: Bump version in setup.py
+        id: bump_version
         run: |
-          DECLARED=$(grep -E "version=['\"]" setup.py | head -1 | sed -E "s/.*version=['\"]([^'\"]+)['\"].*/\1/")
           INPUT_VERSION='${{ inputs.version }}'
-          echo "Declarada: $DECLARED / Input: $INPUT_VERSION"
-          if [ "$INPUT_VERSION" != "$DECLARED" ]; then
-            echo "::error::Versão de input ($INPUT_VERSION) não coincide com setup.py ($DECLARED)."; exit 1; fi
-          echo "version=$DECLARED" >> "$GITHUB_OUTPUT"
+          echo "Updating version to $INPUT_VERSION"
+          sed -i.bak -E "s/version='[0-9A-Za-z._-]+'/version='${INPUT_VERSION}'/" setup.py
+          grep -E "version='${INPUT_VERSION}'" setup.py || (echo "::error::Failed to update version"; exit 1)
+          rm -f setup.py.bak
+          echo "version=${INPUT_VERSION}" >> "$GITHUB_OUTPUT"
 
-      - name: Construir pacotes (sdist + wheel)
+      - name: Commit version
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add setup.py
+          git commit -m "chore: bump version to ${{ inputs.version }}" || echo "Nothing to commit"
+          git push
+
+      - name: Create tag
+        if: ${{ inputs.create_tag == 'true' }}
+        run: |
+          git tag "v${{ inputs.version }}"
+          git push origin "v${{ inputs.version }}"
+
+      - name: Build distribution (sdist + wheel)
         run: |
           python -m build
 
-      - name: Listar artefatos
+      - name: List artifacts
         run: ls -1 dist
 
-      - name: Publicar (PyPI ou TestPyPI)
+      - name: Publish (PyPI or TestPyPI)
         env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
         run: |
           if [ "${{ inputs.dry_run }}" = "true" ]; then
-            echo "Dry-run para TestPyPI";
+            echo "Dry run to TestPyPI";
             twine upload --repository-url https://test.pypi.org/legacy/ dist/*
           else
             twine upload dist/*
           fi
         if: ${{ github.event_name == 'workflow_dispatch' }}
 
-      - name: Publicar em tag (PyPI)
+      - name: Publish on tag (PyPI)
         if: ${{ startsWith(github.ref, 'refs/tags/v') && github.event_name == 'push' }}
         env:
           TWINE_USERNAME: __token__
