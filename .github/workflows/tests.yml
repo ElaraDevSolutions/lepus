@@ -19,6 +19,12 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
+      - name: Install package (editable)
+        run: |
+          pip install -e .
+      - name: Debug Python path
+        run: |
+          python -c "import sys, pprint; pprint.pp(sys.path); import lepus; print('lepus import OK, version attr:', getattr(lepus, '__version__', 'n/a'))"
       - name: Run tests
         run: |
           pytest -q --disable-warnings --maxfail=1
