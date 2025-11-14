@@ -35,21 +35,23 @@ class Queue:
         # Reliability / DLX / retry pattern
         self.dead_letter_exchange = _load_json(value, 'dead_letter_exchange', None)
         self.dead_letter_routing_key = _load_json(value, 'dead_letter_routing_key', None)
-        self.max_retries = _load_json(value, 'max_retries', 0)  # 0 => no retry handling
-        self.retry_delay_ms = _load_json(value, 'retry_delay_ms', 0)  # For future delayed patterns
+        self.max_retries = _load_json(value, 'max_retries', 0)  # 0 => disabled
+        self.retry_strategy = _load_json(value, 'retry_strategy', 'poison')  # poison | dlx | nack
+        self.retry_delay_ms = _load_json(value, 'retry_delay_ms', 0)
         self.poison_queue = _load_json(value, 'poison_queue', f"{self.name}.poison") if self.max_retries > 0 else None
         self.queue_type = _load_json(value, 'queue_type', None)  # 'quorum' or None
+        self.retry_strategy = _load_json(value, 'retry_strategy', 'poison')  # poison | dlx | nack
+        if self.retry_strategy not in ('poison','dlx','nack'):
+            raise ValueError(f"Invalid retry_strategy for queue {self.name}: {self.retry_strategy}")
 
-        # Inject DLX arguments if provided
+        # Inject DLX args if provided
         if self.dead_letter_exchange:
-            # Only add if user hasn't supplied manually
             self.arguments.setdefault('x-dead-letter-exchange', self.dead_letter_exchange)
             if self.dead_letter_routing_key:
                 self.arguments.setdefault('x-dead-letter-routing-key', self.dead_letter_routing_key)
 
         # Quorum queue support
         if self.queue_type == 'quorum':
-            # Force durable for quorum semantics
             self.durable = True
             self.arguments.setdefault('x-queue-type', 'quorum')
 
@@ -138,6 +140,12 @@ class Rabbit:
         # Internal state for reliability features
         self._returned_messages = []  # list of raw bodies returned by broker
         self._retry_counts = {}
+        # Metrics placeholders (initialized lazily when prometheus import succeeds)
+        self._metrics = {}
+        self._metrics_enabled = False
+        # Middleware chains
+        self._publish_mw = []  # f(body)->body
+        self._consume_mw = []  # f(msg)->msg
 
         # Test mode decision: explicit flag or host == 'memory'
         self._test_mode = test_mode or self.host == 'memory'
@@ -280,14 +288,21 @@ class Rabbit:
             return
         def _wrapper(ch, method, properties, body):
             msg = self._deserialize(body)
+            for mw in self._consume_mw:
+                try:
+                    msg = mw(msg)
+                except Exception:
+                    pass
             queue_def = next((qd for qd in self._queue_defs if qd.name == queue), None)
+            success = True
             try:
                 fn(msg)
             except Exception:
+                success = False
                 if queue_def and queue_def.max_retries > 0:
-                    self._handle_retry(queue_def, body)
+                    self._handle_retry(queue_def, body, ch=ch, delivery_tag=method.delivery_tag)
             finally:
-                if not auto_ack:
+                if success and not auto_ack:
                     try:
                         ch.basic_ack(method.delivery_tag)
                     except Exception:
@@ -381,33 +396,69 @@ class Rabbit:
             raise RuntimeError(f"Message returned by broker (unroutable): {body!r}")
 
     # ---------------------- Decorator ----------------------
-    def listener(self, queue: str, auto_ack: bool = True):
+    def listener(self, queue: str, auto_ack: bool = True, model: Any = None):
         def decorator(fn: Callable[[Any], None]):
             self._listeners.setdefault(queue, []).append(fn)
+            queue_def = next((qd for qd in self._queue_defs if qd.name == queue), None)
+            # Enforce auto_ack False for strategies needing broker reject control
+            if queue_def and queue_def.max_retries > 0 and queue_def.retry_strategy in ('dlx','nack') and auto_ack:
+                raise ValueError(f"Queue '{queue}' uses retry_strategy {queue_def.retry_strategy}; set auto_ack=False for proper handling.")
             if self._backend_type == 'select' and not self._test_mode:
                 # Register consumer asynchronously
                 self._init_select_backend()
-                self._register_select_consumer(queue, auto_ack, fn)
+                # Wrap for model validation & middleware
+                def _fn_wrapper(msg):
+                    parsed = self._validate_model(model, msg)
+                    fn(parsed)
+                self._register_select_consumer(queue, auto_ack, _fn_wrapper)
                 return fn
             # If real broker, register consumer now (lazy connection ok)
             def _pika_wrapper(ch, method, properties, body):
                 msg = self._deserialize(body)
+                for mw in self._consume_mw:
+                    try:
+                        msg = mw(msg)
+                    except Exception:
+                        pass
                 queue_def = next((qd for qd in self._queue_defs if qd.name == queue), None)
+                ack_needed = False
                 try:
-                    fn(msg)
-                except Exception as e:
+                    parsed = self._validate_model(model, msg)
+                    fn(parsed)
+                    ack_needed = True  # successful processing -> ack
+                    self._metric_inc('consumed')
+                except Exception:
                     if queue_def and queue_def.max_retries > 0:
-                        self._handle_retry(queue_def, body)
-                    # Always ack to avoid redelivery storm when we manage retries ourselves
-                finally:
-                    if not auto_ack:
-                        try:
-                            ch.basic_ack(method.delivery_tag)
-                        except Exception:
-                            pass
+                        ack_needed = self._handle_retry(queue_def, body, ch=ch, delivery_tag=method.delivery_tag)
+                    else:
+                        # no retry configured, still ack to prevent endless redelivery
+                        ack_needed = True
+                if ack_needed and not auto_ack:
+                    try:
+                        ch.basic_ack(method.delivery_tag)
+                    except Exception:
+                        pass
             if not self._test_mode:
                 self._ensure_connection()
                 self.channel.basic_consume(queue=queue, on_message_callback=_pika_wrapper, auto_ack=auto_ack)
+                return fn
+            # Memory mode: wrap to apply model & consume middlewares consistency
+            def _memory_wrapper(msg):
+                for mw in self._consume_mw:
+                    try:
+                        msg = mw(msg)
+                    except Exception:
+                        pass
+                try:
+                    parsed = self._validate_model(model, msg)
+                    fn(parsed)
+                    self._metric_inc('consumed')
+                except Exception:
+                    qd = next((qd for qd in self._queue_defs if qd.name == queue), None)
+                    if qd and qd.max_retries > 0:
+                        self._handle_retry(qd, self._serialize(msg))
+            # Replace original in listeners list
+            self._listeners[queue][-1] = _memory_wrapper
             return fn
         return decorator
 
@@ -416,16 +467,34 @@ class Rabbit:
         if self._backend_type == 'select' and not self._test_mode:
             self._init_select_backend()
             payload = self._serialize(body)
+            for mw in self._publish_mw:
+                try:
+                    # Support both single-arg and (body, exchange, routing_key)
+                    if getattr(mw, '__code__', None) and mw.__code__.co_argcount >= 3:
+                        body = mw(body, exchange, routing_key)
+                    else:
+                        body = mw(body)
+                except Exception:
+                    pass
             # If channel already ready publish immediately; else enqueue
             if getattr(self, '_select_channel', None):
                 try:
                     self._select_channel.basic_publish(exchange=exchange, routing_key=routing_key, body=payload)
+                    self._metric_inc('published')
                     return
                 except Exception:
                     pass
             self._publish_queue.put((exchange, routing_key, payload))
             return
         self._ensure_connection()
+        for mw in self._publish_mw:
+            try:
+                if getattr(mw, '__code__', None) and mw.__code__.co_argcount >= 3:
+                    body = mw(body, exchange, routing_key)
+                else:
+                    body = mw(body)
+            except Exception:
+                pass
         payload = self._serialize(body)
         if self._test_mode:
             # Memory broker: put into queue and invoke listeners immediately
@@ -441,11 +510,21 @@ class Rabbit:
                     raw = self._memory_queues[qname].get()
                     for fn in self._listeners[qname]:
                         queue_def = next((qd for qd in self._queue_defs if qd.name == qname), None)
+                        msg = self._deserialize(raw)
+                        for mw in self._consume_mw:
+                            try:
+                                msg = mw(msg)
+                            except Exception:
+                                pass
                         try:
-                            fn(self._deserialize(raw))
+                            fn(msg)
+                            self._metric_inc('consumed')
                         except Exception:
                             if queue_def and queue_def.max_retries > 0:
                                 self._handle_retry(queue_def, raw)
+                            else:
+                                # no retry configured: drop
+                                pass
             return
         # Real broker publish
         if self._publisher_confirms:
@@ -454,6 +533,7 @@ class Rabbit:
                 raise RuntimeError("Publish NACK by broker (publisher confirms enabled)")
         else:
             self.channel.basic_publish(exchange=exchange, routing_key=routing_key, body=payload, mandatory=self._mandatory_publish)
+        self._metric_inc('published')
 
     # ---------------------- Consuming ----------------------
     def start_consuming(self, in_thread: bool = True):
@@ -541,23 +621,52 @@ class Rabbit:
         return None
 
     # ---------------------- Retry helper ----------------------
-    def _handle_retry(self, queue_def: Queue, raw_payload: bytes):
+    def _handle_retry(self, queue_def: Queue, raw_payload: bytes, ch=None, delivery_tag=None) -> bool:
+        """Return True if original message should be ACKed, False if ACK suppressed (dlx/nack final)."""
         key = (queue_def.name, raw_payload)
-        count = self._retry_counts.get(key, 0) + 1
-        self._retry_counts[key] = count
-        if count > queue_def.max_retries:
-            # Poison
+        attempt = self._retry_counts.get(key, 0) + 1
+        self._retry_counts[key] = attempt
+        maxr = queue_def.max_retries
+        if attempt <= maxr:
+            # Schedule another attempt (republish) and ack current
+            if self._test_mode:
+                self._memory_queues[queue_def.name].put(raw_payload)
+            else:
+                self.channel.basic_publish(exchange='', routing_key=queue_def.name, body=raw_payload)
+            self._metric_inc('retries')
+            return True
+        # Final attempt exceeded
+        strat = queue_def.retry_strategy
+        if strat == 'poison':
             if self._test_mode:
                 self._memory_queues[queue_def.poison_queue].put(raw_payload)
             else:
-                # Publish to poison queue
                 self.channel.basic_publish(exchange='', routing_key=queue_def.poison_queue, body=raw_payload)
-            return
-        # Requeue for another attempt
-        if self._test_mode:
-            self._memory_queues[queue_def.name].put(raw_payload)
-        else:
-            self.channel.basic_publish(exchange='', routing_key=queue_def.name, body=raw_payload)
+            self._metric_inc('poisoned')
+            return True
+        if strat in ('dlx','nack'):
+            if self._test_mode:
+                # simulate by putting into poison queue
+                self._memory_queues.setdefault(queue_def.poison_queue, _queue.Queue())
+                self._memory_queues[queue_def.poison_queue].put(raw_payload)
+                self._metric_inc('rejected')
+                return False
+            if ch and delivery_tag is not None:
+                try:
+                    if strat == 'dlx':
+                        ch.basic_reject(delivery_tag, requeue=False)
+                    else:
+                        ch.basic_nack(delivery_tag, requeue=False)
+                    self._metric_inc('rejected')
+                    return False
+                except Exception:
+                    pass
+            # Fallback to poison behavior if reject fails
+            self.channel.basic_publish(exchange='', routing_key=queue_def.poison_queue, body=raw_payload)
+            self._metric_inc('poisoned')
+            return True
+        # Default safety ack
+        return True
 
     # ---------------------- Memory inspection (tests) ----------------------
     def get_memory_messages(self, queue_name: str) -> List[Any]:
@@ -569,3 +678,52 @@ class Rabbit:
         # Non destructive copy
         items = list(q.queue)
         return [self._deserialize(x) for x in items]
+
+    # ---------------------- Middleware registration ----------------------
+    def register_publish_middleware(self, fn: Callable[[Any], Any]):
+        self._publish_mw.append(fn)
+    def register_consume_middleware(self, fn: Callable[[Any], Any]):
+        self._consume_mw.append(fn)
+
+    # ---------------------- Model validation (Pydantic) ----------------------
+    def _validate_model(self, model, msg):
+        if not model:
+            return msg
+        try:
+            from pydantic import BaseModel
+        except Exception:
+            raise RuntimeError("Pydantic not installed; add pydantic to requirements to use model validation.")
+        if isinstance(model, type) and issubclass(model, BaseModel):
+            if isinstance(msg, dict):
+                return model(**msg)
+            raise TypeError("Message is not a dict; cannot apply Pydantic model")
+        return msg
+
+    # ---------------------- Metrics ----------------------
+    def enable_metrics(self):
+        if self._metrics_enabled:
+            return
+        try:
+            from prometheus_client import Counter, start_http_server
+        except Exception:
+            return
+        self._metrics['published'] = Counter('lepus_published_total', 'Messages published')
+        self._metrics['consumed'] = Counter('lepus_consumed_total', 'Messages consumed')
+        self._metrics['retries'] = Counter('lepus_retries_total', 'Retry attempts')
+        self._metrics['poisoned'] = Counter('lepus_poison_total', 'Messages sent to poison queue')
+        self._metrics['rejected'] = Counter('lepus_rejected_total', 'Messages rejected/nacked final')
+        self._metrics_enabled = True
+    def _metric_inc(self, name):
+        c = self._metrics.get(name)
+        if c:
+            try:
+                c.inc()
+            except Exception:
+                pass
+    def start_metrics_server(self, port: int = 8000):
+        try:
+            from prometheus_client import start_http_server
+        except Exception:
+            raise RuntimeError("prometheus_client not installed")
+        self.enable_metrics()
+        start_http_server(port)

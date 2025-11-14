@@ -39,10 +39,20 @@ def publish(body: bytes | str | dict, queue: str | None = None, *, exchange: str
 	inst = get_instance()
 	inst.publish(body, exchange=exchange, routing_key=routing_key or queue or '')
 
-def listener(queue: str, auto_ack: bool = True):
-	"""Decorator shortcut using the default instance."""
+def listener(queue: str, auto_ack: bool = True, model=None):
+	"""Decorator shortcut using the default instance with optional Pydantic model validation."""
 	inst = get_instance()
-	return inst.listener(queue, auto_ack=auto_ack)
+	return inst.listener(queue, auto_ack=auto_ack, model=model)
+
+def add_publish_middleware(fn):
+	"""Register a publish middleware on the global instance (fn(body, exchange, routing_key)->body)."""
+	inst = get_instance()
+	inst.register_publish_middleware(fn)
+
+def add_consume_middleware(fn):
+	"""Register a consume middleware on the global instance (fn(message)->message)."""
+	inst = get_instance()
+	inst.register_consume_middleware(fn)
 
 def start_consuming(in_thread: bool = True):
 	inst = get_instance()
@@ -58,6 +68,8 @@ __all__ = [
 	"get_instance",
 	"publish",
 	"listener",
+	"add_publish_middleware",
+	"add_consume_middleware",
 	"start_consuming",
 	"close",
 ]

@@ -222,7 +222,7 @@ def process_payment(msg):
       print("Processed after retries", msg)
 ```
 
-In memory mode you can inspect poison messages:
+In-memory mode you can inspect poison messages:
 ```python
 poison = rabbit.get_memory_messages('payments.poison')
 ```
@@ -270,6 +270,73 @@ Set `queue_type: "quorum"` for quorum semantics. Lepus forces `durable=true` and
 
 ### Poison Queue Monitoring Strategy
 ### Backend Selection
+### Advanced Retry Strategies
+
+Each queue can specify `max_retries` and a `retry_strategy` controlling the final action after exhausting attempts:
+
+| Strategy  | Final Action (real broker)                  | Memory Mode Simulation |
+|-----------|---------------------------------------------|------------------------|
+| `poison`  | Publish to `<queue>.poison`                  | Same                   |
+| `dlx`     | `basic_reject(requeue=False)` (let DLX route)| Stored in poison queue |
+| `nack`    | `basic_nack(requeue=False)`                  | Stored in poison queue |
+
+Example:
+```jsonc
+{
+   "queues": [
+      {"name": "orders", "max_retries": 5, "retry_strategy": "poison"},
+      {"name": "billing", "max_retries": 3, "retry_strategy": "dlx", "dead_letter_exchange": "dlx"},
+      {"name": "notify", "max_retries": 2, "retry_strategy": "nack"}
+   ]
+}
+```
+
+For `dlx` or `nack` strategies you must set `auto_ack=False` in the listener so Lepus can issue the reject/nack itself.
+
+### Middleware System
+
+Register middlewares to mutate messages before publish or before listener execution:
+
+```python
+from lepus import add_publish_middleware, add_consume_middleware
+
+add_publish_middleware(lambda body, ex, rk: {**body, 'trace_id': 'abc123'} if isinstance(body, dict) else body)
+add_consume_middleware(lambda msg: {**msg, 'received_ts': 1234567890} if isinstance(msg, dict) else msg)
+```
+
+Middlewares can accept either one argument `(body)` or three `(body, exchange, routing_key)` for publish; consume middleware gets `(message)` only.
+
+### Pydantic Model Validation (Fallback Stub Supported)
+
+You can enforce schema validation per listener:
+
+```python
+from pydantic import BaseModel
+from lepus import listener
+
+class Payment(BaseModel):
+      id: int
+      amount: float
+
+@listener('payments', model=Payment, auto_ack=False)
+def handle_payment(p: Payment):
+      process(p.id, p.amount)
+```
+
+If validation fails Lepus treats it as a listener exception and applies the retry strategy. In environments where the real `pydantic` package is absent, Lepus ships a minimal stub providing basic type checking so examples continue to work.
+
+### Metrics
+
+Optional Prometheus metrics can be exposed:
+
+```python
+from lepus import get_instance
+rabbit = get_instance()
+rabbit.start_metrics_server(port=9100)  # starts HTTP endpoint /metrics
+```
+
+Counters exported (if `prometheus_client` is installed): published, consumed, retries, poison, rejected.
+
 
 Lepus supports two backends:
 
