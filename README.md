@@ -91,6 +91,7 @@ Certainly, here is the first table in English:
 | `raise_on_nack`              | Raise error if publish NACKed when confirms enabled (default True).    |
 | `raise_on_return`            | Raise error on returned (unroutable) messages (default False).         |
 | `eager`                      | If True, connect immediately on instantiation.                         |
+| `backend`                    | `blocking` (default) or `select` for async SelectConnection backend.   |
 
 ### Queue Properties
 
@@ -240,6 +241,7 @@ Set `queue_type: "quorum"` for quorum semantics. Lepus forces `durable=true` and
 {
    "host": "localhost",
    "eager": true,
+   "backend": "select",
    "reconnect": {
       "enabled": true,
       "max_attempts": 6,
@@ -267,6 +269,22 @@ Set `queue_type: "quorum"` for quorum semantics. Lepus forces `durable=true` and
 ```
 
 ### Poison Queue Monitoring Strategy
+### Backend Selection
+
+Lepus supports two backends:
+
+| Backend    | Description | When to use |
+|------------|-------------|-------------|
+| `blocking` | Uses Pika `BlockingConnection`; consumption can run in a background thread (default) | Simple scripts, unit tests, low concurrency |
+| `select`   | Uses Pika `SelectConnection` in its own I/O thread; non-blocking publish enqueue | Higher concurrency, future event-loop integration |
+
+Configure with:
+```jsonc
+"backend": "select"
+```
+
+Usage does not change for high-level helpers, but publishing is queued and drained asynchronously. Listeners are registered once the async channel is ready.
+
 
 You can attach a separate consumer to the poison queue for alerting or manual inspection. Messages are stored raw (same serialization as original publish).
 

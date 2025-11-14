@@ -2,6 +2,10 @@ import os, json, threading, time, queue as _queue
 from typing import Callable, Any, Dict, List, Optional
 
 from pika import BlockingConnection, ConnectionParameters
+try:  # optional import for select backend monkeypatching/tests
+    from pika.adapters.select_connection import SelectConnection as _PikaSelectConnection
+except Exception:
+    _PikaSelectConnection = None
 from pika.connection import Parameters
 from pika.credentials import PlainCredentials
 from pika.exceptions import AMQPConnectionError
@@ -104,6 +108,11 @@ class Rabbit:
         password = _load_env('RABBIT_PASSWORD', Parameters.DEFAULT_PASSWORD)
         self.credentials = PlainCredentials(username, password)
 
+        # Backend selection (blocking or select)
+        self._backend_type = data.get('backend', 'blocking')
+        if self._backend_type not in ('blocking', 'select'):
+            raise ValueError("Invalid backend; must be 'blocking' or 'select'")
+
         # Queues/exchanges definitions
         self._queue_defs = [Queue(q) for q in data.get('queues', [])]
         self._exchange_defs = [Exchange(e) for e in data.get('exchanges', [])]
@@ -138,7 +147,155 @@ class Rabbit:
 
         # Lazy connection until first publish/consume unless eager requested
         if data.get('eager', False):
-            self._ensure_connection()
+            # For select backend we defer to async initialization thread
+            if self._backend_type == 'blocking':
+                self._ensure_connection()
+            elif self._backend_type == 'select' and not self._test_mode:
+                self._init_select_backend()
+
+    # ---------------------- Select backend init ----------------------
+    def _init_select_backend(self):
+        """Initialize SelectConnection backend.
+
+        We spin an IO thread that establishes an async connection and processes
+        a thread-safe publish queue. This is a minimal abstraction; advanced
+        flow control (drain events, backpressure) can be added later.
+        """
+        if self._backend_type != 'select' or self._test_mode:
+            return
+        if getattr(self, '_select_thread', None):
+            return
+        if _PikaSelectConnection is None:
+            raise RuntimeError("SelectConnection adapter not available in pika installation")
+
+        self._publish_queue = _queue.Queue()
+        self._pending_listeners = []  # (queue, auto_ack, fn)
+        self._select_ready = threading.Event()
+        self._select_closing = threading.Event()
+        self._select_ioloop = None
+        self._select_channel = None
+
+        params = ConnectionParameters(
+            host=self.host,
+            port=self.port,
+            virtual_host=self.virtual_host,
+            blocked_connection_timeout=self.blocked_connection_timeout,
+            channel_max=self.channel_max,
+            client_properties=self.client_properties,
+            connection_attempts=self.connection_attempts,
+            frame_max=self.frame_max,
+            heartbeat=self.heartbeat,
+            locale=self.locale,
+            retry_delay=self.retry_delay,
+            socket_timeout=self.socket_timeout,
+            stack_timeout=self.stack_timeout,
+            credentials=self.credentials,
+        )
+
+        def _on_connection_open(conn):
+            conn.channel(on_open_callback=_on_channel_open)
+
+        def _on_connection_open_error(conn, err):
+            # Fallback: mark ready to avoid deadlock, user can inspect state
+            self._select_ready.set()
+
+        def _on_connection_closed(conn, reason):
+            self._select_closing.set()
+            try:
+                if self._select_ioloop:
+                    self._select_ioloop.stop()
+            except Exception:
+                pass
+
+        def _on_channel_open(channel):
+            self._select_channel = channel
+            # Declare queues/exchanges then flush pending listeners & publishes
+            for q in self._queue_defs:
+                channel.queue_declare(
+                    queue=q.name,
+                    passive=q.passive,
+                    durable=q.durable,
+                    exclusive=q.exclusive,
+                    auto_delete=q.auto_delete,
+                    arguments=q.arguments,
+                )
+            for ex in self._exchange_defs:
+                channel.exchange_declare(
+                    exchange=ex.name,
+                    exchange_type=ex.type,
+                    passive=ex.passive,
+                    durable=ex.durable,
+                    auto_delete=ex.auto_delete,
+                    internal=ex.internal,
+                    arguments=ex.arguments,
+                )
+            # Register listeners
+            for (qname, auto_ack, fn) in self._pending_listeners:
+                self._register_select_consumer(qname, auto_ack, fn)
+            self._pending_listeners.clear()
+            self._select_ready.set()
+            # Schedule periodic publish drain
+            self._select_ioloop.call_later(0.01, _drain_publish_queue)
+
+        def _drain_publish_queue():
+            if self._select_closing.is_set():
+                return
+            try:
+                while not self._publish_queue.empty():
+                    exchange, routing_key, payload = self._publish_queue.get()
+                    if self._select_channel:
+                        self._select_channel.basic_publish(exchange=exchange, routing_key=routing_key, body=payload)
+            except Exception:
+                pass
+            # Reschedule
+            if self._select_ioloop:
+                self._select_ioloop.call_later(0.05, _drain_publish_queue)
+
+        def _run_ioloop():
+            attempt = 0
+            while not self._select_closing.is_set() and (attempt == 0 or self._reconnect_enabled and attempt < self._reconnect_max_attempts):
+                attempt += 1
+                try:
+                    conn = _PikaSelectConnection(
+                        params,
+                        on_open_callback=_on_connection_open,
+                        on_open_error_callback=_on_connection_open_error,
+                        on_close_callback=_on_connection_closed,
+                    )
+                    self._select_ioloop = conn.ioloop
+                    conn.ioloop.start()
+                except Exception:
+                    if not self._reconnect_enabled or attempt >= self._reconnect_max_attempts:
+                        break
+                    delay = min(self._reconnect_base_delay * (2 ** (attempt - 1)), self._reconnect_max_delay)
+                    time.sleep(delay)
+            self._select_ready.set()
+
+        self._select_thread = threading.Thread(target=_run_ioloop, name="lepus-select-io", daemon=True)
+        self._select_thread.start()
+
+    def _register_select_consumer(self, queue: str, auto_ack: bool, fn):
+        if not self._select_channel:
+            self._pending_listeners.append((queue, auto_ack, fn))
+            return
+        def _wrapper(ch, method, properties, body):
+            msg = self._deserialize(body)
+            queue_def = next((qd for qd in self._queue_defs if qd.name == queue), None)
+            try:
+                fn(msg)
+            except Exception:
+                if queue_def and queue_def.max_retries > 0:
+                    self._handle_retry(queue_def, body)
+            finally:
+                if not auto_ack:
+                    try:
+                        ch.basic_ack(method.delivery_tag)
+                    except Exception:
+                        pass
+        try:
+            self._select_channel.basic_consume(queue=queue, on_message_callback=_wrapper, auto_ack=auto_ack)
+        except Exception:
+            self._pending_listeners.append((queue, auto_ack, fn))
 
     # ---------------------- Internal setup ----------------------
     def _ensure_connection(self):
@@ -227,6 +384,11 @@ class Rabbit:
     def listener(self, queue: str, auto_ack: bool = True):
         def decorator(fn: Callable[[Any], None]):
             self._listeners.setdefault(queue, []).append(fn)
+            if self._backend_type == 'select' and not self._test_mode:
+                # Register consumer asynchronously
+                self._init_select_backend()
+                self._register_select_consumer(queue, auto_ack, fn)
+                return fn
             # If real broker, register consumer now (lazy connection ok)
             def _pika_wrapper(ch, method, properties, body):
                 msg = self._deserialize(body)
@@ -251,6 +413,18 @@ class Rabbit:
 
     # ---------------------- Publish ----------------------
     def publish(self, body: Any, *, exchange: str = '', routing_key: str = ''):
+        if self._backend_type == 'select' and not self._test_mode:
+            self._init_select_backend()
+            payload = self._serialize(body)
+            # If channel already ready publish immediately; else enqueue
+            if getattr(self, '_select_channel', None):
+                try:
+                    self._select_channel.basic_publish(exchange=exchange, routing_key=routing_key, body=payload)
+                    return
+                except Exception:
+                    pass
+            self._publish_queue.put((exchange, routing_key, payload))
+            return
         self._ensure_connection()
         payload = self._serialize(body)
         if self._test_mode:
@@ -283,8 +457,15 @@ class Rabbit:
 
     # ---------------------- Consuming ----------------------
     def start_consuming(self, in_thread: bool = True):
-        if self._test_mode:
+        if self._backend_type == 'select' and not self._test_mode:
+            # Select backend already consumes in its own IO thread
+            self._init_select_backend()
+            # Wait until channel ready if user wants blocking assurance
+            if not in_thread:
+                self._select_ready.wait(timeout=10)
             # Nothing blocking needed; messages delivered synchronously
+            return
+        if self._test_mode:
             return
         self._ensure_connection()
         if not in_thread:
@@ -330,6 +511,16 @@ class Rabbit:
 
     # ---------------------- Close ----------------------
     def close(self):
+        if self._backend_type == 'select' and not self._test_mode:
+            # Signal close and wait thread
+            self._select_closing.set()
+            try:
+                if self._select_ioloop:
+                    self._select_ioloop.stop()
+            except Exception:
+                pass
+            if getattr(self, '_select_thread', None):
+                self._select_thread.join(timeout=2)
         if self._test_mode:
             return
         if self.connection:
