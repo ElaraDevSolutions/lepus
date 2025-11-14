@@ -1,0 +1,21 @@
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "daily"
+    open-pull-requests-limit: 10
+    # optional: labels applied to Dependabot PRs
+    labels:
+      - "dependencies"
+    # Dependabot will open PRs for both direct and transitive updates.
+    # You can add `allow`, `ignore`, `assignees`, `reviewers` as needed.
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "daily"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "github-actions"
